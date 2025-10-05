@@ -13,36 +13,34 @@ window: ^sdl.Window
 renderer: ^sdl.Renderer
 texture: ^sdl.Texture
 w, h: c.int
-fb: [BUF_WIDTH * BUF_HEIGHT * 4]u8
-texture_width: i32
-texture_pitch: i32
-frame_allocator: mem.Allocator
-temp_allocator: mem.Allocator
+fb: [BUF_WIDTH * BUF_HEIGHT * BYTES_PER_PIXEL]u8
+
+render_gradient :: proc(x_off: int, y_off: int) {
+	i := 0
+	for y := 0; y < int(h); y += 1 {
+		for x := 0; x < int(w); x += 1 {
+			fb[i] = u8(x + x_off)
+			i += 1
+			fb[i] = u8(y + y_off)
+			i += 1
+			fb[i] = 000
+			i += 1
+			fb[i] = 255
+			i += 1
+		}
+	}
+}
 
 draw :: proc() {
-	// col := u8(sdl.GetTicks() % 2) * 255
 	sdl.SetRenderDrawColor(renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
 	sdl.RenderClear(renderer)
 
-	sdl.GetWindowSize(window, &w, &h)
-	pitch: i32 = 4 * w
-	for &p, i in fb {
-		c := i % 4
-		switch c {
-		case 0:
-			p = 0 // blue
-		case 1:
-			p = 0 // green
-		case 2:
-			p = 255 // red
-		case 3:
-			p = 255 // alpha
-		}
-	}
-
+	pitch: i32 = BYTES_PER_PIXEL * w
+	x_off := int(sdl.GetTicks())
+	// y_off := int(sdl.GetTicks())
+	render_gradient(x_off, 0)
 	sdl.UpdateTexture(texture, nil, &fb, pitch)
 	sdl.RenderTexture(renderer, texture, nil, nil)
-	sdl.Delay(1)
 
 	sdl.RenderPresent(renderer)
 }
@@ -54,13 +52,16 @@ handle_event :: proc(event: ^sdl.Event) -> bool {
 	#partial pix: switch event.type {
 	case sdl.EventType.WINDOW_RESIZED:
 		sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
-	// case sdl.EventType.WINDOW_PIXEL_SIZE_CHANGED:
+	case sdl.EventType.WINDOW_PIXEL_SIZE_CHANGED:
+		sdl.GetWindowSize(window, &w, &h)
+		resize_texture(event.window.data1, event.window.data2)
 	// sdl.
 	case sdl.EventType.KEY_DOWN:
 		sdl.Log("key down: %d", event.window.data2)
 	case sdl.EventType.KEY_UP:
 		sdl.Log("key up: %d", event.window.data2)
 	case sdl.EventType.WINDOW_EXPOSED:
+		sdl.Log("draw")
 		draw()
 	case:
 		sdl.Log("unhandled event: %d", event.type)
@@ -70,8 +71,6 @@ handle_event :: proc(event: ^sdl.Event) -> bool {
 
 resize_texture :: proc(width, height: i32) -> (ok: bool) {
 	if texture != nil do sdl.DestroyTexture(texture)
-	// if fb != nil do delete(fb)
-
 	texture = sdl.CreateTexture(
 		renderer,
 		sdl.PixelFormat.ARGB8888,
@@ -81,11 +80,6 @@ resize_texture :: proc(width, height: i32) -> (ok: bool) {
 	)
 
 	if texture == nil {return false}
-
-	// fb = make([]u32, width * height)
-	texture_width = width
-
-	// mem.zero_slice(fb)
 	return true
 }
 
@@ -123,6 +117,7 @@ main :: proc() {
 			if event.type == sdl.EventType.QUIT {done = true}
 			handle_event(&event)
 		}
+		draw()
 	}
 
 }
