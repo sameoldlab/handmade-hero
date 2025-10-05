@@ -7,18 +7,19 @@ import sdl "vendor:sdl3"
 // Constants
 BUF_WIDTH :: 1920
 BUF_HEIGHT :: 1080
-BYTES_PER_PIXEL :: 4
 
-window: ^sdl.Window
-renderer: ^sdl.Renderer
-texture: ^sdl.Texture
-w, h: c.int
-fb: [BUF_WIDTH * BUF_HEIGHT * BYTES_PER_PIXEL]u8
+SDL3_Offscreen_Buffer :: struct {
+	window:   ^sdl.Window,
+	renderer: ^sdl.Renderer,
+	texture:  ^sdl.Texture,
+	fb:       []u8,
+	w, h:     c.int,
+}
 
-render_gradient :: proc(x_off: int, y_off: int) {
+render_gradient :: proc(fb: []u8, w, h, x_off, y_off: int) {
 	i := 0
-	for y := 0; y < int(h); y += 1 {
-		for x := 0; x < int(w); x += 1 {
+	for y in 0 ..< h {
+		for x in 0 ..< w {
 			fb[i] = u8(x + x_off)
 			i += 1
 			fb[i] = u8(y + y_off)
@@ -31,94 +32,122 @@ render_gradient :: proc(x_off: int, y_off: int) {
 	}
 }
 
-draw :: proc() {
-	sdl.SetRenderDrawColor(renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
-	sdl.RenderClear(renderer)
+draw :: proc(app: ^SDL3_Offscreen_Buffer) {
+	sdl.SetRenderDrawColor(app.renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
+	sdl.RenderClear(app.renderer)
 
-	pitch: i32 = BYTES_PER_PIXEL * w
+	pitch: i32 = 4 * BUF_WIDTH
 	x_off := int(sdl.GetTicks())
-	// y_off := int(sdl.GetTicks())
-	render_gradient(x_off, 0)
-	sdl.UpdateTexture(texture, nil, &fb, pitch)
-	sdl.RenderTexture(renderer, texture, nil, nil)
+	y_off := int(sdl.GetTicks())
 
-	sdl.RenderPresent(renderer)
+	// sdl.Log("resize (%d, %d)", app.w, app.h)
+	render_gradient(app.fb, BUF_WIDTH, BUF_HEIGHT, x_off, 0)
+	sdl.UpdateTexture(app.texture, nil, raw_data(app.fb), pitch)
+	sdl.RenderTexture(app.renderer, app.texture, nil, nil)
+
+	sdl.RenderPresent(app.renderer)
 }
 
 // Event docs: SDL_EventType.html
-handle_event :: proc(event: ^sdl.Event) -> bool {
+handle_event :: proc(app: ^SDL3_Offscreen_Buffer, event: sdl.Event) -> bool {
 	pitch: u32
 
-	#partial pix: switch event.type {
-	case sdl.EventType.WINDOW_RESIZED:
+	#partial switch event.type {
+	case .WINDOW_RESIZED:
 		sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
-	case sdl.EventType.WINDOW_PIXEL_SIZE_CHANGED:
-		sdl.GetWindowSize(window, &w, &h)
-		resize_texture(event.window.data1, event.window.data2)
+	case .WINDOW_PIXEL_SIZE_CHANGED:
+		sdl.GetWindowSize(app.window, &app.w, &app.h)
+	// resize_texture(app, event.window.data1, event.window.data2)
 	// sdl.
-	case sdl.EventType.KEY_DOWN:
+	case .KEY_DOWN:
 		sdl.Log("key down: %d", event.window.data2)
-	case sdl.EventType.KEY_UP:
+	case .KEY_UP:
 		sdl.Log("key up: %d", event.window.data2)
-	case sdl.EventType.WINDOW_EXPOSED:
+	case .WINDOW_EXPOSED:
 		sdl.Log("draw")
-		draw()
+		draw(app)
 	case:
 		sdl.Log("unhandled event: %d", event.type)
 	}
 	return true
 }
 
-resize_texture :: proc(width, height: i32) -> (ok: bool) {
-	if texture != nil do sdl.DestroyTexture(texture)
-	texture = sdl.CreateTexture(
-		renderer,
+resize_texture :: proc(app: ^SDL3_Offscreen_Buffer, width, height: i32) -> (ok: bool) {
+	if app.texture != nil do sdl.DestroyTexture(app.texture)
+	if app.fb != nil do delete(app.fb)
+
+	app.texture = sdl.CreateTexture(
+		app.renderer,
 		sdl.PixelFormat.ARGB8888,
 		sdl.TextureAccess.STREAMING,
 		width,
 		height,
 	)
 
-	if texture == nil {return false}
+	if app.texture == nil {return false}
+	app.fb = make([]u8, width * height * 4)
 	return true
 }
 
-init_ui :: proc() -> bool {
+init_ui :: proc() -> (app: SDL3_Offscreen_Buffer, err: Maybe(string)) {
 	_ignore := sdl.SetAppMetadata("Hero", "1.0", "supply.same.handmade")
 	if (!sdl.Init(sdl.INIT_VIDEO)) {
-		sdl.Log("Couldn't initialize SDL3: %s", sdl.GetError())
-		return false
+		return app, string(sdl.GetError())
 	}
-	if (!sdl.CreateWindowAndRenderer("Hero", 640, 480, sdl.WINDOW_RESIZABLE, &window, &renderer)) {
-		sdl.Log("Couldn't create window/renderer: %s", sdl.GetError())
-		return false
-	}
-	return true
+
+
+	app.window = sdl.CreateWindow("Hero", 640, 480, sdl.WINDOW_RESIZABLE)
+	if app.window == nil {return app, string(sdl.GetError())}
+
+	app.renderer = sdl.CreateRenderer(app.window, nil)
+	if app.renderer == nil {return app, string(sdl.GetError())}
+
+	return app, nil
 }
 
-quit :: proc() {
-	sdl.DestroyTexture(texture)
-	sdl.DestroyWindow(window)
+quit :: proc(app: SDL3_Offscreen_Buffer) {
+	if app.fb != nil do delete(app.fb)
+	sdl.DestroyTexture(app.texture)
+	sdl.DestroyWindow(app.window)
 	sdl.Quit()
 }
 
 main :: proc() {
-	if !init_ui() do panic("unable to initialize ui")
-	defer quit()
-
-	// fb = make([]u32, BUF_WIDTH * BUF_HEIGHT)
-	// defer delete(fb)
-
-	resize_texture(BUF_WIDTH, BUF_HEIGHT)
-	done := false
-	for !done {
-		event: sdl.Event
-		for sdl.PollEvent(&event) {
-			if event.type == sdl.EventType.QUIT {done = true}
-			handle_event(&event)
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	context.allocator = mem.tracking_allocator(&track)
+	defer {
+		if len(track.allocation_map) > 0 {
+			fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
+			for _, entry in track.allocation_map {
+				fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+			}
 		}
-		draw()
+		if len(track.bad_free_array) > 0 {
+			fmt.eprintf("=== %v incorrect frees: ===\n", len(track.bad_free_array))
+			for entry in track.bad_free_array {
+				fmt.eprintf("- %p bytes @ %v\n", entry.memory, entry.location)
+			}
+		}
+		mem.tracking_allocator_destroy(&track)
 	}
 
+	app, err := init_ui()
+	if err != nil do fmt.panicf("unable to initialize ui %s", err)
+	defer quit(app)
+	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
+
+	done: for {
+		event: sdl.Event
+		for sdl.PollEvent(&event) {
+			if event.type == sdl.EventType.QUIT ||
+			   (event.type == sdl.EventType.KEY_DOWN &&
+					   event.key.scancode == sdl.Scancode.ESCAPE) {
+				break done
+			}
+			handle_event(&app, event)
+		}
+		draw(&app)
+	}
 }
 
