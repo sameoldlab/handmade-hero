@@ -1,4 +1,5 @@
 package main
+import "base:intrinsics"
 import "core:c"
 import "core:fmt"
 import "core:mem"
@@ -145,25 +146,26 @@ quit :: proc(app: SDL3_Offscreen_Buffer) {
 }
 
 main :: proc() {
-	track: mem.Tracking_Allocator
-	mem.tracking_allocator_init(&track, context.allocator)
-	context.allocator = mem.tracking_allocator(&track)
-	defer {
-		if len(track.allocation_map) > 0 {
-			fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
-			for _, entry in track.allocation_map {
-				fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+	when ODIN_DEBUG {
+		track: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&track, context.allocator)
+		context.allocator = mem.tracking_allocator(&track)
+		defer {
+			if len(track.allocation_map) > 0 {
+				fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
+				for _, entry in track.allocation_map {
+					fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+				}
 			}
-		}
-		if len(track.bad_free_array) > 0 {
-			fmt.eprintf("=== %v incorrect frees: ===\n", len(track.bad_free_array))
-			for entry in track.bad_free_array {
-				fmt.eprintf("- %p bytes @ %v\n", entry.memory, entry.location)
+			if len(track.bad_free_array) > 0 {
+				fmt.eprintf("=== %v incorrect frees: ===\n", len(track.bad_free_array))
+				for entry in track.bad_free_array {
+					fmt.eprintf("- %p bytes @ %v\n", entry.memory, entry.location)
+				}
 			}
+			mem.tracking_allocator_destroy(&track)
 		}
-		mem.tracking_allocator_destroy(&track)
 	}
-
 	app, err := init_ui()
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
 	init_controller()
@@ -171,6 +173,10 @@ main :: proc() {
 	resize_texture(&app, BUF_WIDTH, BUF_HEIGHT)
 
 	done: for {
+		when ODIN_DEBUG {
+			perfCount := sdl.GetPerformanceFrequency()
+			lastCount := sdl.GetPerformanceCounter()
+		}
 		event: sdl.Event
 		for sdl.PollEvent(&event) {
 			if event.type == sdl.EventType.QUIT ||
@@ -181,6 +187,17 @@ main :: proc() {
 			handle_event(&app, event)
 		}
 		draw(&app)
+		when ODIN_DEBUG {
+			endCounter := sdl.GetPerformanceCounter()
+			counterElapsed := endCounter - lastCount
+			msPerFrame := (((1000 * counterElapsed) / perfCount))
+			fps := perfCount / counterElapsed
+
+			lastCycleCounter := intrinsics.read_cycle_counter()
+			elapsed := i64(endCounter) - lastCycleCounter
+			mcpf := elapsed / (2000)
+			fmt.printfln("%.02f ms/f, %.02f/s, %.02mc/f,", msPerFrame, fps, mcpf)
+		}
 	}
 }
 
