@@ -37,12 +37,12 @@ draw :: proc(app: ^SDL3_Offscreen_Buffer) {
 	sdl.SetRenderDrawColor(app.renderer, 0, 0, 0, sdl.ALPHA_OPAQUE)
 	sdl.RenderClear(app.renderer)
 
-	pitch: i32 = 4 * BUF_WIDTH
+	pitch: i32 = 4 * app.w
 	x_off := int(sdl.GetTicks())
 	y_off := int(sdl.GetTicks())
 
 	// sdl.Log("resize (%d, %d)", app.w, app.h)
-	render_gradient(app.fb, BUF_WIDTH, BUF_HEIGHT, x_off, 0)
+	render_gradient(app.fb, int(app.w), int(app.h), x_off, 0)
 	sdl.UpdateTexture(app.texture, nil, raw_data(app.fb), pitch)
 	sdl.RenderTexture(app.renderer, app.texture, nil, nil)
 
@@ -58,7 +58,7 @@ handle_event :: proc(app: ^SDL3_Offscreen_Buffer, event: sdl.Event) -> bool {
 		sdl.Log("resize (%d, %d)", event.window.data1, event.window.data2)
 	case .WINDOW_PIXEL_SIZE_CHANGED:
 		sdl.GetWindowSize(app.window, &app.w, &app.h)
-	// resize_texture(app, event.window.data1, event.window.data2)
+		resize_texture(app, event.window.data1, event.window.data2)
 	case .KEY_DOWN, .KEY_UP:
 		wasDown := event.key.repeat || event.type == .KEY_UP
 		isDown := event.type == .KEY_DOWN
