@@ -10,7 +10,7 @@ import sdl "vendor:sdl3"
 BUF_WIDTH :: 1920
 BUF_HEIGHT :: 1080
 SAMPLE_RATE :: 44100
-TONE_VOLUME :: 6000
+TONE_VOLUME :: 1
 
 SDL3_Offscreen_Buffer :: struct {
 	window:   ^sdl.Window,
@@ -21,27 +21,28 @@ SDL3_Offscreen_Buffer :: struct {
 }
 current_sample: i32 = 0
 
-play :: proc(stream: ^sdl.AudioStream) {
-	bytesPerSample: i32 = size_of(i16) * 2
-	bytesToWrite := SAMPLE_RATE * bytesPerSample - sdl.GetAudioStreamQueued(stream)
+play :: proc(stream: ^sdl.AudioStream, freq := 440) {
+	BytesPerSample: i32 : size_of(f32) * 2
+	WavePeriod: f32 : SAMPLE_RATE / 256.0
+	bytesToWrite := SAMPLE_RATE * BytesPerSample - sdl.GetAudioStreamQueued(stream)
 	if bytesToWrite <= 0 do return
 
-	buf := make([]i16, bytesToWrite, context.temp_allocator)
-
-	fmt.println(sdl.GetAudioStreamQueued(stream))
+	buf := make([]f32, bytesToWrite, context.temp_allocator)
 	for i in 0 ..< (len(buf) / 2) {
-		FREQ :: 440
-		phase := f16(current_sample * FREQ / (SAMPLE_RATE / 2))
+		t: f32 = 2.0 * math.PI * f32(current_sample) / WavePeriod
 
-		val := math.sin_f16(phase * 2 * math.PI) * TONE_VOLUME
+		val := math.sin_f32(t) * TONE_VOLUME
 
-		buf[i * 2] = i16(val)
-		buf[i * 2 + 1] = i16(val)
+		buf[i * 2] = val
+		buf[i * 2 + 1] = val
 		current_sample += 1
 	}
 
-	current_sample %= SAMPLE_RATE * 2
-	sdl.PutAudioStreamData(stream, &buf[0], i32(len(buf) * size_of(i16)))
+	current_sample %= SAMPLE_RATE
+	res := sdl.PutAudioStreamData(stream, raw_data(buf), bytesToWrite * 4)
+	if !res {
+		sdl.Log("failed to put audio %s", sdl.GetError())
+	}
 }
 
 render_gradient :: proc(fb: []u8, w, h, x_off, y_off: int) {
@@ -159,7 +160,7 @@ init_sound :: proc() -> (stream: ^sdl.AudioStream, err: Maybe(string)) {
 	if !sdl.InitSubSystem(sdl.INIT_AUDIO) {
 		return stream, string(sdl.GetError())
 	}
-	spec := sdl.AudioSpec{sdl.AudioFormat.S16, 2, SAMPLE_RATE}
+	spec := sdl.AudioSpec{sdl.AudioFormat.F32, 2, SAMPLE_RATE}
 	stream = sdl.OpenAudioDeviceStream(sdl.AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nil, nil)
 	if stream == nil {
 		return stream, string(sdl.GetError())
