@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 
 # cc -std=gnu99 -Wall -Werror -g main.c -o out/main -lX11 -lXi -lXcursor -lGL -ldl -lm 
-cc -std=c99 -Wall -Werror -g main.c -o out/main -lSDL3
+# cc -std=c99 -Wall -Werror -g main.c -o out/main -lSDL3
+odin run . -debug -o:none -out=./out/hh
