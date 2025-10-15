@@ -30,24 +30,21 @@ drawGradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
 updateAndRender :: proc(buffer: ^OffscreenBuffer) {
 	drawGradient(buffer.fb, buffer.w, buffer.h, ctx.x_offset, ctx.y_offset)
 }
-current_sample: i32 = 0
-tSine: f32 = 0
 
 gameOutputSound :: proc(sound: ^GameSoundBuffer) {
-	ToneVolume :: 1
-	ToneHz :: 256
-	wavePeriod: f32 = f32(sound.sampleRate) / ToneHz
+	ToneVolume :: .5
+	wavePeriod: f32 = f32(sound.sampleRate) / ctx.toneHz
 
 	for i in 0 ..< (len(sound.samples) / 2) {
-		t: f32 = 2.0 * math.PI * f32(current_sample) / wavePeriod
-		tSine += 2.0 * math.PI / wavePeriod
-		if tSine >= math.PI * 2 {tSine = 0}
-		val := math.sin_f32(tSine) * ToneVolume
+		t: f32 = 2.0 * math.PI * f32(ctx.current_sample) / wavePeriod
+		ctx.tSine += 2.0 * math.PI / wavePeriod
+		if ctx.tSine >= math.PI * 2 {ctx.tSine = 0}
+		val := math.sin_f32(ctx.tSine) * ToneVolume
 		sound.samples[i * 2] = val
 		sound.samples[i * 2 + 1] = val
-		current_sample += 1
+		ctx.current_sample += 1
 	}
 
-	current_sample %= sound.sampleRate
+	ctx.current_sample %= sound.sampleRate
 }
 
