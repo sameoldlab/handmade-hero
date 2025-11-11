@@ -8,7 +8,8 @@ start :: proc() {
 	// fmt.println("linux ", app.TITLE)
 	wl_connection, err := wl.connect_display()
 	if err == linux.Errno.NONE {
-		fmt.println("Error: ", wl.run(&wl_connection))
+		errno := wl.run(&wl_connection)
+		fmt.println("Error: ", errno)
 	} else {
 		sdl_start()
 	}
