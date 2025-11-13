@@ -5969,7 +5969,7 @@ parse_wl_pointer_axis_relative_direction :: proc(connection: ^Connection) -> (ev
 }
 parse_wl_keyboard_keymap :: proc(connection: ^Connection) -> (event: Event_Keyboard_Keymap, ok: bool) {
 	read(connection, &event.format) or_return
-	read(connection, &event.fd) or_return
+	read_fd(connection, &event.fd) or_return
 	read(connection, &event.size) or_return
 	ok = true
 	return

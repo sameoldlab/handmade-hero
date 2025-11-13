@@ -59,9 +59,14 @@ generate_id :: proc(connection: ^Connection, type: Object_Type) -> u32 {
 	return id
 }
 
-connection_flush :: proc(connection: ^Connection) {
+connection_flush :: proc(connection: ^Connection) -> linux.Errno {
+	data := bytes.buffer_to_bytes(&connection.buffer)
+
+	if len(data) == 0 {
+		return .NONE
+	}
 	msg := linux.Msg_Hdr {
-		iov     = {{base = raw_data(connection.buffer.buf), len = len(connection.buffer.buf)}},
+		iov     = {{base = raw_data(data), len = len(data)}},
 		control = make(
 			[]byte,
 			16 + ((len(connection.fds_out) + 7) & -8) * 4,
@@ -80,10 +85,11 @@ connection_flush :: proc(connection: ^Connection) {
 	copy(msg.control[16:], slice.to_bytes(connection.fds_out[:]))
 
 	n, errno := linux.sendmsg(connection.socket, &msg, {.CMSG_CLOEXEC, .NOSIGNAL})
-	assert(errno == .NONE)
 
 	bytes.buffer_reset(&connection.buffer)
+	clear(&connection.fds_out)
 	connection.data_cursor = 0
+	return errno
 }
 
 display_connect :: proc(
@@ -97,11 +103,27 @@ display_connect :: proc(
 }
 
 connection_poll :: proc(connection: ^Connection, buffer: []byte) {
+	control: [256]byte
 	msg: linux.Msg_Hdr = {
-		iov = {transmute(linux.IO_Vec)buffer},
+		iov     = {transmute(linux.IO_Vec)buffer},
+		control = control[:],
 	}
 	n, errno := linux.recvmsg(connection.socket, &msg, {.CMSG_CLOEXEC, .NOSIGNAL})
 	connection.data = buffer[:n]
+
+	if control[0] != 0 {
+		hdr := cast(^struct {
+			len:         u64,
+			level, type: i32,
+		})raw_data(msg.control)
+		if hdr.level == i32(linux.SOL_SOCKET) && hdr.type == 1 {
+			num_fds := (int(hdr.len) - 16) / 4
+			for i in 0 ..< num_fds {
+				fd := (cast(^linux.Fd)(&msg.control[16 + i * 4]))^
+				append(&connection.fds_in, auto_cast fd)
+			}
+		}
+	}
 	assert(errno == .NONE || errno == .EAGAIN)
 }
 

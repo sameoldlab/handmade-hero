@@ -18,7 +18,6 @@ import "core:sys/unix"
 MAX_POOL_SIZE :: app.BUF_WIDTH * app.BUF_HEIGHT * 4 * 4
 State :: struct {
 	shm_pool_size, stride, w, h: i32,
-	should_redraw:               bool,
 	shm_fd:                      linux.Fd,
 	shm_pool_data:               []u8,
 	status:                      Status,
@@ -37,7 +36,7 @@ State :: struct {
 	data_device_manager:         wl.Data_Device_Manager,
 	data_source:                 wl.Data_Source,
 	cursor_shape_manager:        wl.Wp_Cursor_Shape_Manager_V1,
-	keymap:                      rawptr,
+	keymap:                      bool,
 }
 Progress :: enum {
 	Continue,
@@ -72,10 +71,9 @@ run :: proc() -> Progress {
 	conn.object_types[1] = .Display
 
 	state := State {
-		wl_registry   = wl.display_get_registry(&conn, wl_display),
-		w             = 500,
-		h             = 500,
-		should_redraw = true,
+		wl_registry = wl.display_get_registry(&conn, wl_display),
+		w           = 500,
+		h           = 500,
 	}
 	wl.display_sync(&conn, wl_display)
 
@@ -89,8 +87,8 @@ run :: proc() -> Progress {
 	state.shm_fd = shm_fd
 	defer quit(&conn, state)
 
-	// recv_buf: [4096]byte
-	recv_buf := make([]u8, 1 << 16)
+	recv_buf: [4096]byte
+	// recv_buf := make([]u8, 1 << 16)
 	fmt.println("ready")
 	m: for {
 		if err := wl.connection_flush(&conn); err != .NONE {
@@ -103,37 +101,38 @@ run :: proc() -> Progress {
 			return .Crash
 		}
 
-		// pfd := linux.Poll_Fd {
-		// 	fd     = conn.socket,
-		// 	events = {.IN},
-		// }
-		// result, err := linux.poll({pfd}, 1)
-		// if result > 0 {
-		wl.connection_poll(&conn, recv_buf[:])
-		// fmt.println("+ poll")
-		// }
+		pfd := linux.Poll_Fd {
+			fd     = conn.socket,
+			events = {.IN},
+		}
+		result, err := linux.poll({pfd}, 1)
+		if result > 0 {
+			wl.connection_poll(&conn, recv_buf[:])
+			// fmt.println("+ poll")
+		}
 		for {
 			object, event := wl.peek_event(&conn) or_break
-			if prog := receive_events(&conn, &state, object, event); prog == .Exit do break m
+			if prog := receive_events(&conn, &state, object, event); prog != .Continue do return prog
 		}
 		conn.data_cursor = 0
 		conn.data = {}
 		using state
 		if wl_shm != 0 && wl_compositor != 0 && xdg_wm_base != 0 && wl_surface == 0 {
 			wl_surface = wl.compositor_create_surface(&conn, wl_compositor)
-			fmt.println(wl_surface, "created surface")
 			xdg_surface = wl.xdg_wm_base_get_xdg_surface(&conn, xdg_wm_base, wl_surface)
 			xdg_toplevel = wl.xdg_surface_get_toplevel(&conn, xdg_surface)
 			wl.surface_commit(&conn, wl_surface)
-			fmt.println(xdg_surface, "xdg surface")
-			fmt.println(xdg_toplevel, "xdg toplevel")
-			fmt.println(wl_surface, "commited surface")
+			fmt.println(xdg_surface, "xdg_surface")
+			fmt.println(xdg_toplevel, "xdg_toplevel")
+			fmt.println(wl_surface, "wl_surface")
 			wl.xdg_toplevel_set_title(&conn, state.xdg_toplevel, app.TITLE)
 			wl.xdg_toplevel_set_app_id(&conn, state.xdg_toplevel, app.APP_ID)
 		}
-		if wl_seat != 0 {
-			// wl_keyboard = wl.seat_get_keyboard(&conn, wl_seat)
-			// wl_pointer = wl.seat_get_pointer(&conn, wl_seat)
+		if wl_seat != 0 && wl_keyboard == 0 {
+			wl_keyboard = wl.seat_get_keyboard(&conn, wl_seat)
+			wl_pointer = wl.seat_get_pointer(&conn, wl_seat)
+			fmt.println(wl_keyboard, "wl_keyboard")
+			fmt.println(wl_pointer, "wl_pointer")
 		}
 
 		if status == .None do continue
@@ -146,18 +145,15 @@ run :: proc() -> Progress {
 			// assert(shm_pool_size != 0)
 		}
 
-		if state.should_redraw {
-			app.update_render(
-				&{fb = state.shm_pool_data[:state.shm_pool_size], h = state.h, w = state.w},
-			)
-			wl.surface_attach(&conn, wl_surface, wl_buffer, 0, 0)
-			wl.surface_commit(&conn, wl_surface)
-			wl.surface_damage_buffer(&conn, wl_surface, 0, 0, w, h)
-			wl.surface_commit(&conn, wl_surface)
+		app.update_render(
+			&{fb = state.shm_pool_data[:state.shm_pool_size], h = state.h, w = state.w},
+		)
+		wl.surface_attach(&conn, wl_surface, wl_buffer, 0, 0)
+		wl.surface_commit(&conn, wl_surface)
+		wl.surface_damage_buffer(&conn, wl_surface, 0, 0, w, h)
+		wl.surface_commit(&conn, wl_surface)
 
-			state.should_redraw = false
-			state.status = .SurfaceAttached
-		}
+		state.status = .SurfaceAttached
 	}
 	return .Exit
 }
@@ -262,7 +258,6 @@ receive_events :: proc(conn: ^wl.Connection, state: ^State, obj: u32, ev: wl.Eve
 	case wl.Event_Xdg_Toplevel_Configure:
 		fmt.println("config: ", e.height, "x", e.height, "|| states: ", e.states, sep = "")
 		if e.height == 0 || e.width == 0 do break
-		state.should_redraw = true
 		if state.wl_buffer != 0 && state.shm_pool_size != e.height * e.width * 4 {
 			resize_pool(state, e.width, e.height)
 			wl.buffer_destroy(conn, state.wl_buffer)
@@ -296,16 +291,20 @@ receive_events :: proc(conn: ^wl.Connection, state: ^State, obj: u32, ev: wl.Eve
 		touch_available := capabilities > 4
 	case wl.Event_Seat_Name:
 	case wl.Event_Keyboard_Keymap:
+		fmt.println("Keymap", e.fd, e.size, state.keymap)
 		assert(e.format == .Xkb_V1)
 		fd: linux.Fd = auto_cast e.fd
-		if keymap, mmap_err := linux.mmap(0, uint(e.size), {.READ}, {.PRIVATE}, fd);
-		   mmap_err != .NONE {
+		if (!state.keymap) {
+			if ptr, err := linux.mmap(0, uint(e.size), {.READ}, {.PRIVATE}, fd); err != .NONE {
+				fmt.println("mmap failed, ", err)
+				linux.close(fd)
+				return .Crash
+			} else {
+				state.keymap = true
+				linux.munmap(ptr, uint(e.size))
+			}
 			linux.close(fd)
-			return .Crash
-		} else {
-			state.keymap = keymap
 		}
-		fmt.println("Keymap", fd, e.size)
 	case:
 		fmt.printf("unknown message header: %i; opcode: %i\n", obj, e)
 	}
@@ -324,6 +323,9 @@ quit :: proc(conn: ^wl.Connection, state: State) {
 	if state.xdg_toplevel != 0 do wl.xdg_toplevel_destroy(conn, state.xdg_toplevel)
 	if state.xdg_surface != 0 do wl.xdg_surface_destroy(conn, state.xdg_surface)
 	if state.wl_surface != 0 do wl.surface_destroy(conn, state.wl_surface)
+	if state.wl_seat != 0 do wl.seat_release(conn, state.wl_seat)
+	if state.wl_keyboard != 0 do wl.keyboard_release(conn, state.wl_keyboard)
+	if state.wl_pointer != 0 do wl.pointer_release(conn, state.wl_pointer)
 	wl.connection_flush(conn)
 	fmt.println("closing shm_fd", state.shm_fd)
 	if len(state.shm_pool_data) > 0 {
