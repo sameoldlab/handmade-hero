@@ -1,7 +1,7 @@
 package wayland2
 
 import app "../../app"
-import wl "../../vendor/wayland_odin"
+import wl "./wl"
 import "core:bytes"
 import "core:c"
 import "core:encoding/endian"
