@@ -215,7 +215,7 @@ sdl_start :: proc() {
 				)
 				sdl.PutAudioStreamData(sound.stream, &samples[0], bytesToWrite * 4)
 			}
-			app.update_render(ctx.fb, ctx.w, ctx.h)
+			app.update_render(ctx.fb, u32(ctx.w), u32(ctx.h))
 			pl_draw(app.FrameBuffer{ctx.fb, ctx.w, ctx.h}, ctx.renderer, ctx.texture)
 			// if !res {
 			// 	sdl.Log("failed to put audio %s", sdl.GetError())

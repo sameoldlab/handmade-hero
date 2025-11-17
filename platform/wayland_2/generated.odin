@@ -1,5 +1,6 @@
 package wayland
 
+import "core:fmt"
 import "core:bytes"
 
 import "base:intrinsics"
@@ -1188,6 +1189,7 @@ registry_bind :: proc(connection: ^Connection, wl_registry: Registry, name: u32,
 	bytes.buffer_write_ptr(&connection.buffer, &version, size_of(version))
 	_type := resolve_type(T, interface, _location)
 	id = auto_cast generate_id(connection, _type)
+	when ODIN_DEBUG do fmt.printfln("BOUND %sv%i to %i", interface, version, id)
 	bytes.buffer_write_ptr(&connection.buffer, &id, size_of(id))
 	return
 }

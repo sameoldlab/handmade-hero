@@ -15,7 +15,7 @@ Pixel :: struct #raw_union {
 	value: u32,
 	color: Color,
 }
-draw_gradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
+draw_gradient :: proc(fb: []u8, w, h: u32, x_off, y_off: i32) {
 	pitch := w * 4
 	for y in 0 ..< h {
 		for x in 0 ..< w {
@@ -28,7 +28,7 @@ draw_gradient :: proc(fb: []u8, w, h, x_off, y_off: i32) {
 }
 
 
-update_render :: proc(fb: []u8, w, h: i32) {
+update_render :: proc(fb: []u8, w, h: u32) {
 	ctx.x_offset += 1
 	ctx.y_offset += 1
 	draw_gradient(fb, w, h, ctx.x_offset, ctx.y_offset)
@@ -49,6 +49,16 @@ output_sound :: proc(sound: ^SampleBuffer) {
 	}
 
 	ctx.current_sample %= sound.sampleRate
+}
+
+EventType :: enum {}
+Event :: struct {
+	type: EventType,
+}
+handle_event :: proc(e: Event) {
+	switch e.type {
+
+	}
 }
 
 key_input :: proc(key: Input) {

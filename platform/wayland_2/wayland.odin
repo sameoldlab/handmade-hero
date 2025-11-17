@@ -7,38 +7,56 @@ import "core:mem"
 import "core:os"
 import "core:sys/linux"
 import "egl"
+import "gbm"
 import gl "vendor:OpenGL"
 
 
 MAX_POOL_SIZE :: app.BUF_WIDTH * app.BUF_HEIGHT * 4 * 4
+BUF_LEN :: 2
 State :: struct {
-	buffer_size, stride, w, h: i32,
-	shm_fd:                    linux.Fd,
-	shm_pool_data:             []u8,
-	status:                    Status,
-	wl_registry:               Registry,
-	wl_shm:                    Shm,
-	wl_shm_pool:               Shm_Pool,
-	wl_buffer:                 [2]Buffer,
-	xdg_wm_base:               Xdg_Wm_Base,
-	xdg_surface:               Xdg_Surface,
-	wl_surface:                Surface,
-	surface_callback:          Callback,
-	tick:                      u32,
-	should_redraw:             bool,
-	wl_compositor:             Compositor,
-	xdg_toplevel:              Xdg_Toplevel,
-	wl_seat:                   Seat,
-	wl_pointer:                Pointer,
-	wl_keyboard:               Keyboard,
-	data_device_manager:       Data_Device_Manager,
-	data_source:               Data_Source,
-	cursor_shape_manager:      Wp_Cursor_Shape_Manager_V1,
-	keymap:                    bool,
-	use_software:              bool,
-	egl_display:               egl.Display,
-	egl_surface:               egl.Surface,
-	egl_context:               egl.Context,
+	buffer_size, stride, w, h:           u32,
+	tick:                                u32,
+	keymap, use_software, should_redraw: bool,
+	status:                              Status,
+
+	// WL
+	wl_registry:                         Registry,
+	wl_buffer:                           [BUF_LEN]Buffer,
+	xdg_wm_base:                         Xdg_Wm_Base,
+	xdg_surface:                         Xdg_Surface,
+	wl_surface:                          Surface,
+	surface_callback:                    Callback,
+	wl_compositor:                       Compositor,
+	xdg_toplevel:                        Xdg_Toplevel,
+	wl_seat:                             Seat,
+	wl_pointer:                          Pointer,
+	wl_keyboard:                         Keyboard,
+	data_device_manager:                 Data_Device_Manager,
+	data_source:                         Data_Source,
+	cursor_shape_manager:                Wp_Cursor_Shape_Manager_V1,
+
+	// EGL
+	egl_display:                         egl.Display,
+	egl_surface:                         egl.Surface,
+	egl_context:                         egl.Context,
+
+	// GBM
+	gbo:                                 Gbo,
+	drm_fd:                              linux.Fd,
+	gbm_device:                          gbm.Device,
+	gbm_surface:                         gbm.Surface,
+	zwp_linux_dmabuf:                    Zwp_Linux_Dmabuf_V1,
+
+	// SHM
+	shm_fd:                              linux.Fd,
+	wl_shm:                              Shm,
+	wl_shm_pool:                         Shm_Pool,
+	shm_pool_data:                       []u8,
+}
+// change to soa
+Gbo :: struct {
+	bos: [BUF_LEN]gbm.BufferObject,
+	fds: [BUF_LEN]linux.Fd,
 }
 Progress :: enum {
 	Continue,
@@ -112,25 +130,46 @@ start :: proc() -> Progress {
 }
 
 draw :: proc(conn: ^Connection, st: ^State, i: u32) {
+	fmt.println("====================START DRAW====================")
 	using st
 	if use_software {
 		i := i % len(st.wl_buffer)
 		surface_frame(conn, wl_surface)
-
-		app.update_render(
-			st.shm_pool_data[i32((i)) * st.buffer_size:][:st.buffer_size],
-			st.w,
-			st.h,
-		)
+		app.update_render(st.shm_pool_data[((i)) * st.buffer_size:][:st.buffer_size], st.w, st.h)
 		surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
-		surface_damage_buffer(conn, wl_surface, 0, 0, w, h)
+		surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
 		surface_commit(conn, wl_surface)
 		st.should_redraw = false
 	} else {
-		gl.ClearColor(1, 0, 0, 1)
+		assert(st.zwp_linux_dmabuf != 0)
+		fmt.println("gl.ClearColor")
+		gl.ClearColor(.5, .5, .8, .9)
+		fmt.println("color buffer bit")
 		gl.Clear(gl.COLOR_BUFFER_BIT)
-		gl.Flush()
+		fmt.println("swap")
 		egl.SwapBuffers(egl_display, egl_surface)
+
+
+		fmt.println("lock")
+		bo := gbm.surface_lock_front_buffer(st.gbm_surface)
+		fmt.println("post-lock", bo)
+		assert(bo != {})
+		for buffer, i in bos {
+			if buffer == bo {
+				fmt.println(wl_buffer[i])
+				surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
+				surface_damage_buffer(conn, wl_surface, 0, 0, 4000, 4000)
+				surface_commit(conn, wl_surface)
+				gbm.surface_release_buffer(gbm_surface, bo)
+				st.should_redraw = false
+				fmt.println("====================END DRAW====================")
+
+				return
+			}
+		}
+		gbm.surface_release_buffer(gbm_surface, bo)
+		fmt.println("buffer not in pool")
+
 	}
 }
 
@@ -174,10 +213,10 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 				b = shm_pool_create_buffer(
 					conn,
 					wl_shm_pool,
-					i32(i) * buffer_size,
-					w,
-					h,
-					stride,
+					i32(u32(i) * buffer_size),
+					i32(w),
+					i32(h),
+					i32(stride),
 					.Argb8888,
 				)
 			}
@@ -188,103 +227,6 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 		}
 	} else do setup_gl(conn, st)
 	return .NONE
-}
-
-// https://registry.khronos.org/EGL/sdk/docs/man/html/eglIntro.xhtml
-setup_gl :: proc(conn: ^Connection, st: ^State) -> Progress {
-	assert(st.wl_surface != 0)
-	egl.load_extensions()
-	fmt.print("\n\n\n=====================\n")
-	major, minor: i32
-	egl.BindAPI(egl.OPENGL_API)
-
-	st.egl_display = egl.GetPlatformDisplayEXT(egl.PLATFORM_WAYLAND_KHR, nil, nil)
-	// st.egl_display = egl.GetDisplay(egl.DEFAULT_DISPLAY)
-	if st.egl_display == nil {
-		fmt.println("Failed to create egl display")
-		return .Crash
-	}
-	assert(st.egl_display != {})
-	initialized := egl.Initialize(st.egl_display, &major, &minor)
-	assert(initialized == egl.TRUE)
-
-	fmt.println(st.egl_display, "egl_display created")
-	fmt.printfln("EGL v%i.%i", major, minor)
-
-	config_attribs: [11]i32 = {
-		egl.SURFACE_TYPE,
-		egl.WINDOW_BIT,
-		egl.RENDERABLE_TYPE,
-		egl.OPENGL_BIT,
-		egl.RED_SIZE,
-		8,
-		egl.GREEN_SIZE,
-		8,
-		egl.BLUE_SIZE,
-		8,
-		egl.NONE,
-	}
-	num_configs: i32
-	configs: [256]egl.Config
-	if egl.GetConfigs(st.egl_display, &configs[0], len(configs), &num_configs) {
-		fmt.println("configs: ", num_configs)
-		fmt.println("configs: ", configs)
-	}
-	assert(num_configs > 0)
-	egl_config: egl.Config
-	if egl.ChooseConfig(st.egl_display, &config_attribs[0], &egl_config, 1, &num_configs) {
-		fmt.println("configs: ", num_configs)
-	}
-	assert(num_configs == 1)
-
-	context_attribs := []i32{egl.CONTEXT_MAJOR_VERSION, 2, egl.CONTEXT_MINOR_VERSION, 1, egl.NONE}
-	st.egl_context = egl.CreateContext(
-		st.egl_display,
-		egl_config,
-		egl.NO_CONTEXT,
-		nil, //&context_attribs[0],
-	)
-	assert(st.egl_context != {})
-	fmt.println(st.egl_context, "egl_context created")
-
-	/* 
-	  egl's `NativeWindowType`, required to make a window, is a pointer to the surface type used to create egl_display.
-	  In this case a proxy object struct from libwayland's implementation of wayland protocol.
-	  To use egl.PLATFORM_WAYLAND_KHR without libwayland (assuming it works) would mean passing in a struct, with
-	  function pointers and an event queue, which exactly matched libwayland's as egl will call back
-	  into libwayland to run the operations it needs. It's a big dependency injection club, and you're not in it!
-	  ============================================================================================================
-	  The wl_egl_window which creates said function cannot be "changed to use your " function cannot be modified as
-	  To use OpenGl without this requires implementing linux-dmabuf yourself.
-	  Info may be found in Mesa's implementation at src/egl/drivers/dri2/platform_wayland.c"
-	 * https://ziggit.dev/t/drawing-with-opengl-without-glfw-or-sdl-on-linux/3175/12
-	 * https://blaztinn.gitlab.io/post/dmabuf-texture-sharing/
-	 */
-
-	// does not work
-	wl_egl_surface := shim_wl_surface_proxy(conn, st.wl_surface)
-	egl_window, ok := wl_egl_window_create(wl_egl_surface, st.w, st.h)
-	assert(ok)
-	fmt.println("egl_window: ", egl_window, "\nshim_surface", wl_egl_surface)
-	st.egl_surface = egl.CreatePlatformWindowSurfaceEXT(
-		st.egl_display,
-		egl_config,
-		cast(egl.NativeWindowType)egl_window,
-		nil,
-	)
-	fmt.printfln("egl surface: ", st.egl_surface)
-	assert(st.egl_surface != {})
-	res := egl.MakeCurrent(st.egl_display, st.egl_surface, st.egl_surface, st.egl_context)
-	assert(res == true)
-
-
-	w, h: i32
-	egl.QuerySurface(st.egl_display, st.egl_surface, egl.WIDTH, &w)
-	egl.QuerySurface(st.egl_display, st.egl_surface, egl.HEIGHT, &h)
-	fmt.printfln("egl %ix%i:", w, h)
-
-	fmt.print("\n\n\n=====================")
-	return .Continue
 }
 
 connect_display :: proc() -> (conn: Connection, display: Display, ok: bool) {
@@ -362,6 +304,15 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 			)
 		case "wl_seat":
 			st.wl_seat = registry_bind(conn, st.wl_registry, e.name, e.interface, e.version, Seat)
+		case "zwp_linux_dmabuf_v1":
+			st.zwp_linux_dmabuf = registry_bind(
+				conn,
+				st.wl_registry,
+				e.name,
+				e.interface,
+				4,
+				Zwp_Linux_Dmabuf_V1,
+			)
 		}
 	case Event_Display_Error:
 		fmt.println("[ERROR] code:", e.code, "::", e.object_id, e.message)
@@ -379,25 +330,27 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 		}
 	case Event_Xdg_Toplevel_Configure:
 		fmt.println("config: ", e.height, "x", e.height, "|| states: ", e.states, sep = "")
-		if e.height == 0 || e.width == 0 do break
-		if st.wl_buffer != 0 && st.buffer_size != e.height * e.width * 4 {
-			resize_pool(st, e.width, e.height)
-			for &b, i in st.wl_buffer {
-				if b != 0 do buffer_destroy(conn, b)
-				b = shm_pool_create_buffer(
-					conn,
-					st.wl_shm_pool,
-					i32(i) * st.buffer_size,
-					st.w,
-					st.h,
-					st.stride,
-					.Argb8888,
-				)
+		if st.use_software {
+			if e.height == 0 || e.width == 0 do break
+			if st.wl_buffer != 0 && i32(st.buffer_size) != e.height * e.width * 4 {
+				resize_pool(st, e.width, e.height)
+				for &b, i in st.wl_buffer {
+					if b != 0 do buffer_destroy(conn, b)
+					b = shm_pool_create_buffer(
+						conn,
+						st.wl_shm_pool,
+						i32(i) * i32(st.buffer_size),
+						i32(st.w),
+						i32(st.h),
+						i32(st.stride),
+						.Argb8888,
+					)
+				}
+				st.status = .None
 			}
-			st.status = .None
-		}
-		if (st.wl_shm_pool != 0 && st.buffer_size * 2 > MAX_POOL_SIZE) {
-			shm_pool_resize(conn, st.wl_shm_pool, st.buffer_size)
+			if (st.wl_shm_pool != 0 && st.buffer_size * 2 > MAX_POOL_SIZE) {
+				shm_pool_resize(conn, st.wl_shm_pool, i32(st.buffer_size))
+			}
 		}
 	case Event_Xdg_Toplevel_Close:
 		return .Exit
@@ -437,12 +390,11 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 	return .Continue
 }
 
-resize_pool :: proc(state: ^State, w, h: i32) -> i32 {
-	state.w = w
-	state.h = h
+resize_pool :: proc(state: ^State, w, h: i32) {
+	state.w = auto_cast w
+	state.h = auto_cast h
 	state.stride = state.w * 4
 	state.buffer_size = state.stride * state.h
-	return state.buffer_size
 }
 
 quit :: proc(conn: ^Connection, state: State) {
