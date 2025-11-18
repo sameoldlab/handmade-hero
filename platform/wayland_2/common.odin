@@ -47,8 +47,7 @@ Connection :: struct {
 	socket:       linux.Fd,
 }
 
-generate_id :: proc(connection: ^Connection, type: Object_Type) -> u32 {
-	id: u32
+generate_id :: proc(connection: ^Connection, type: Object_Type) -> (id: u32) {
 	if len(connection.free_ids) != 0 {
 		id = pop(&connection.free_ids)
 		connection.object_types[id] = type

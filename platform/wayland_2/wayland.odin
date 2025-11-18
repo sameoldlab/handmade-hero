@@ -41,7 +41,6 @@ State :: struct {
 	egl_context:                         egl.Context,
 
 	// GBM
-	gbo:                                 Gbo,
 	drm_fd:                              linux.Fd,
 	gbm_device:                          gbm.Device,
 	gbm_surface:                         gbm.Surface,
@@ -53,11 +52,24 @@ State :: struct {
 	wl_shm_pool:                         Shm_Pool,
 	shm_pool_data:                       []u8,
 }
-// change to soa
+
+// // change to soa
+// Gbo :: struct {
+// 	bos:    [BUF_LEN]gbm.BufferObject,
+// 	fds:    [BUF_LEN]linux.Fd,
+// 	busy:   [BUF_LEN]bool,
+// 	buffer: [BUF_LEN]Buffer,
+// }
+// gbo: Gbo
+
 Gbo :: struct {
-	bos: [BUF_LEN]gbm.BufferObject,
-	fds: [BUF_LEN]linux.Fd,
+	bo:     gbm.BufferObject,
+	fd:     linux.Fd,
+	busy:   bool,
+	buffer: Buffer,
 }
+gbo: #soa[2]Gbo
+
 Progress :: enum {
 	Continue,
 	Exit,
@@ -123,7 +135,8 @@ start :: proc() -> Progress {
 		}
 		if st.status == .None do continue
 
-		if st.should_redraw do draw(&conn, &st, u32(i))
+		// if st.should_redraw do
+		draw(&conn, &st, u32(i))
 		i += 1
 	}
 	return .Exit
@@ -133,6 +146,7 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 	fmt.println("====================START DRAW====================")
 	using st
 	if use_software {
+		if !should_redraw do return
 		i := i % len(st.wl_buffer)
 		surface_frame(conn, wl_surface)
 		app.update_render(st.shm_pool_data[((i)) * st.buffer_size:][:st.buffer_size], st.w, st.h)
@@ -142,37 +156,145 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 		st.should_redraw = false
 	} else {
 		assert(st.zwp_linux_dmabuf != 0)
-		fmt.println("gl.ClearColor")
+		free_idx := -1
+		le := gbo.fd[0]
+
+		for busy, i in gbo.busy {
+			if !busy {
+				free_idx = i
+				break
+			}
+		}
+		if free_idx == -1 {
+			fmt.println("all busy")
+			st.should_redraw = false
+			return
+		}
 		gl.ClearColor(.5, .5, .8, .9)
-		fmt.println("color buffer bit")
 		gl.Clear(gl.COLOR_BUFFER_BIT)
-		fmt.println("swap")
-		egl.SwapBuffers(egl_display, egl_surface)
+		glscene()
+		res := egl.SwapBuffers(egl_display, egl_surface)
+		fmt.printfln("swap (%b32)", res)
+		assert(res == true)
 
-
-		fmt.println("lock")
 		bo := gbm.surface_lock_front_buffer(st.gbm_surface)
 		fmt.println("post-lock", bo)
 		assert(bo != {})
-		for buffer, i in bos {
-			if buffer == bo {
-				fmt.println(wl_buffer[i])
-				surface_attach(conn, wl_surface, wl_buffer[i], 0, 0)
-				surface_damage_buffer(conn, wl_surface, 0, 0, 4000, 4000)
-				surface_commit(conn, wl_surface)
-				gbm.surface_release_buffer(gbm_surface, bo)
-				st.should_redraw = false
-				fmt.println("====================END DRAW====================")
 
-				return
-			}
+		i := free_idx
+		if gbo[i].bo != {} && gbo[i].bo != bo {
+			gbm.surface_release_buffer(gbm_surface, gbo[i].bo)
 		}
-		gbm.surface_release_buffer(gbm_surface, bo)
-		fmt.println("buffer not in pool")
+		gbo[i].bo = bo
 
+
+		fmt.println(gbo[i].buffer)
+		surface_attach(conn, wl_surface, gbo[i].buffer, 0, 0)
+		surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
+		surface_commit(conn, wl_surface)
+
+
+		gbo[i].busy = true
+		st.should_redraw = false
+		fmt.println("====================END DRAW====================")
 	}
 }
+glscene :: proc() {
+	// Shader source that draws a textures quad
+	vertex_shader_source: cstring =
+		"#version 330 core\n" +
+		"layout (location = 0) in vec3 aPos;\n" +
+		"layout (location = 1) in vec2 aTexCoords;\n" +
+		"out vec2 TexCoords;\n" +
+		"void main()\n" +
+		"{\n" +
+		"   TexCoords = aTexCoords;\n" +
+		"   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n" +
+		"}"
+	fragment_shader_source: cstring =
+		"#version 330 core\n" +
+		"out vec4 FragColor;\n" +
+		"in vec2 TexCoords;\n" +
+		"uniform sampler2D Texture1;\n" +
+		"void main()\n" +
+		"{\n" +
+		"   FragColor = texture(Texture1, TexCoords);\n" +
+		"}"
 
+	// vertex shader
+	vertex_shader := gl.CreateShader(gl.VERTEX_SHADER)
+	gl.ShaderSource(vertex_shader, 1, &vertex_shader_source, nil)
+	gl.CompileShader(vertex_shader)
+	// fragment shader
+	fragment_shader := gl.CreateShader(gl.FRAGMENT_SHADER)
+	gl.ShaderSource(fragment_shader, 1, &fragment_shader_source, nil)
+	gl.CompileShader(fragment_shader)
+	// link shaders
+	shader_program := gl.CreateProgram()
+	gl.AttachShader(shader_program, vertex_shader)
+	gl.AttachShader(shader_program, fragment_shader)
+	gl.LinkProgram(shader_program)
+	// delete shaders
+	gl.DeleteShader(vertex_shader)
+	gl.DeleteShader(fragment_shader)
+
+	// quad
+	vertices := []f32 {
+		0.5,
+		0.5,
+		0.0,
+		1.0,
+		0.0, // top right
+		0.5,
+		-0.5,
+		0.0,
+		1.0,
+		1.0, // bottom right
+		-0.5,
+		-0.5,
+		0.0,
+		0.0,
+		1.0, // bottom left
+		-0.5,
+		0.5,
+		0.0,
+		0.0,
+		0.0, // top left
+	}
+	indices: []u32 = {
+		0,
+		1,
+		3, // first Triangle
+		1,
+		2,
+		3, // second Triangle
+	}
+
+	VBO, VAO, EBO: u32
+	gl.GenVertexArrays(1, &VAO)
+	gl.GenBuffers(1, &VBO)
+	gl.GenBuffers(1, &EBO)
+	gl.BindVertexArray(VAO)
+
+	gl.BindBuffer(gl.ARRAY_BUFFER, VBO)
+	gl.BufferData(gl.ARRAY_BUFFER, size_of(vertices), raw_data(vertices), gl.STATIC_DRAW)
+
+	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, EBO)
+	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, size_of(indices), raw_data(indices), gl.STATIC_DRAW)
+
+	gl.EnableVertexAttribArray(0)
+	gl.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 5 * size_of(f32), 0)
+	gl.EnableVertexAttribArray(1)
+	gl.VertexAttribPointer(1, 2, gl.FLOAT, gl.FALSE, 5 * size_of(f32), (3 * size_of(f32)))
+
+	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
+
+	gl.BindVertexArray(0)
+
+	// Prebind needed stuff for drawing
+	gl.UseProgram(shader_program)
+	gl.BindVertexArray(VAO)
+}
 create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Errno {
 	connection_flush(conn) or_return
 	connection_poll(conn, buff)
@@ -225,7 +347,7 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 			fmt.println(wl_shm_pool, "shm created")
 			fmt.println(wl_buffer, "buffers created")
 		}
-	} else do setup_gl(conn, st)
+	} else do setup_egl(conn, st)
 	return .NONE
 }
 

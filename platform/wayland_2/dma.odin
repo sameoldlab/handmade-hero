@@ -28,10 +28,17 @@ open_drm_device :: proc() -> (fd: linux.Fd, ok: bool) {
 	return 0, false
 }
 
+/* 
+  Info may be found in Mesa's implementation at src/egl/drivers/dri2/platform_wayland.c"
+ * https://ziggit.dev/t/drawing-with-opengl-without-glfw-or-sdl-on-linux/3175/12
+ * https://blaztinn.gitlab.io/post/dmabuf-texture-sharing/
+ */
+
 // https://registry.khronos.org/EGL/sdk/docs/man/html/eglIntro.xhtml
-setup_gl :: proc(conn: ^Connection, st: ^State) -> Progress {
+setup_egl :: proc(conn: ^Connection, st: ^State) -> Progress {
 	fmt.print("\n\n\n=====================\n")
 
+	egl.BindAPI(egl.OPENGL_API)
 	drm_fd, ok := open_drm_device()
 	assert(drm_fd != 0)
 	st.drm_fd = drm_fd
@@ -91,23 +98,6 @@ setup_gl :: proc(conn: ^Connection, st: ^State) -> Progress {
 	assert(num_configs == 1)
 
 
-	/* 
-	  Info may be found in Mesa's implementation at src/egl/drivers/dri2/platform_wayland.c"
-	 * https://ziggit.dev/t/drawing-with-opengl-without-glfw-or-sdl-on-linux/3175/12
-	 * https://blaztinn.gitlab.io/post/dmabuf-texture-sharing/
-	 */
-
-	st.egl_surface = egl.CreatePlatformWindowSurface(
-		st.egl_display,
-		egl_config,
-		cast(egl.NativeWindowType)gbm_surface,
-		nil,
-	)
-	fmt.println("egl surface: ", st.egl_surface)
-	assert(st.egl_surface != {})
-
-	egl.BindAPI(egl.OPENGL_API)
-
 	context_attribs := []i32{egl.CONTEXT_MAJOR_VERSION, 3, egl.CONTEXT_MINOR_VERSION, 3, egl.NONE}
 	st.egl_context = egl.CreateContext(
 		st.egl_display,
@@ -118,6 +108,12 @@ setup_gl :: proc(conn: ^Connection, st: ^State) -> Progress {
 	assert(st.egl_context != {})
 	fmt.println(st.egl_context, "egl_context created")
 
+
+	st.egl_surface = egl.CreatePlatformWindowSurface(st.egl_display, egl_config, gbm_surface, nil)
+	fmt.println("egl surface: ", st.egl_surface)
+	assert(st.egl_surface != {})
+
+
 	res := egl.MakeCurrent(st.egl_display, st.egl_surface, st.egl_surface, st.egl_context)
 	assert(res == true)
 
@@ -125,28 +121,39 @@ setup_gl :: proc(conn: ^Connection, st: ^State) -> Progress {
 	w, h: i32
 	egl.QuerySurface(st.egl_display, st.egl_surface, egl.WIDTH, &w)
 	egl.QuerySurface(st.egl_display, st.egl_surface, egl.HEIGHT, &h)
+	assert(u32(w) == st.w)
 	fmt.printfln("egl %ix%i:", w, h)
 
-	gl.load_up_to(3, 3, egl.gl_set_proc_address)
 	st.gbm_device = gbm_device
 	st.gbm_surface = gbm_surface
-	init_buffers(conn, st)
+
+	gl.load_up_to(3, 3, egl.gl_set_proc_address)
+	gl.Viewport(0, 0, 500, 500)
+
+	// init_buffers(conn, st)
 	fmt.print("\n=====================\n")
 	return .Continue
 }
-bos: [2]gbm.BufferObject
-// fds: [2]linux.Fd
+bos: [BUF_LEN]gbm.BufferObject
+fds: [BUF_LEN]linux.Fd
 init_buffers :: proc(conn: ^Connection, st: ^State) {
 	using st
 	for &buffer, i in st.wl_buffer {
 		// create dummy frame
 		gl.ClearColor(1, 1, 1, 1)
 		gl.Clear(gl.COLOR_BUFFER_BIT)
-		egl.SwapBuffers(egl_display, egl_surface)
-		gl.Finish()
+		res := egl.SwapBuffers(egl_display, egl_surface)
+		fmt.printfln("swap (%b32)", res)
+
+		// Check for errors
+		err := gl.GetError()
+		if err != gl.NO_ERROR {
+			fmt.printfln("OpenGL error: %d", err)
+		}
+
 
 		bo := gbm.surface_lock_front_buffer(gbm_surface)
-		defer gbm.surface_release_buffer(gbm_surface, bo)
+		// defer gbm.surface_release_buffer(gbm_surface, bo)
 		assert(bo != {})
 
 		fmt.println("new buffer", bo)
