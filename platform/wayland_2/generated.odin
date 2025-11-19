@@ -5799,7 +5799,7 @@ parse_wl_data_source_target :: proc(connection: ^Connection) -> (event: Event_Da
 }
 parse_wl_data_source_send :: proc(connection: ^Connection) -> (event: Event_Data_Source_Send, ok: bool) {
 	read(connection, &event.mime_type) or_return
-	read(connection, &event.fd) or_return
+	read_fd(connection, &event.fd) or_return
 	ok = true
 	return
 }
@@ -6123,7 +6123,7 @@ parse_zwp_linux_dmabuf_feedback_v1_done :: proc(connection: ^Connection) -> (eve
 	return
 }
 parse_zwp_linux_dmabuf_feedback_v1_format_table :: proc(connection: ^Connection) -> (event: Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table, ok: bool) {
-	read(connection, &event.fd) or_return
+	read_fd(connection, &event.fd) or_return
 	read(connection, &event.size) or_return
 	ok = true
 	return
@@ -6629,7 +6629,7 @@ parse_wp_color_representation_manager_v1_done :: proc(connection: ^Connection) -
 	return
 }
 parse_wp_drm_lease_device_v1_drm_fd :: proc(connection: ^Connection) -> (event: Event_Wp_Drm_Lease_Device_V1_Drm_Fd, ok: bool) {
-	read(connection, &event.fd) or_return
+	read_fd(connection, &event.fd) or_return
 	ok = true
 	return
 }
@@ -6704,7 +6704,7 @@ parse_ext_data_control_device_v1_primary_selection :: proc(connection: ^Connecti
 }
 parse_ext_data_control_source_v1_send :: proc(connection: ^Connection) -> (event: Event_Ext_Data_Control_Source_V1_Send, ok: bool) {
 	read(connection, &event.mime_type) or_return
-	read(connection, &event.fd) or_return
+	read_fd(connection, &event.fd) or_return
 	ok = true
 	return
 }

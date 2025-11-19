@@ -53,26 +53,16 @@ State :: struct {
 	shm_pool_data:                       []u8,
 }
 
-// // change to soa
-// Gbo :: struct {
-// 	bos:    [BUF_LEN]gbm.BufferObject,
-// 	fds:    [BUF_LEN]linux.Fd,
-// 	busy:   [BUF_LEN]bool,
-// 	buffer: [BUF_LEN]Buffer,
-// }
-// gbo: Gbo
-
 Gbo :: struct {
 	bo:     gbm.BufferObject,
 	fd:     linux.Fd,
 	busy:   bool,
 	buffer: Buffer,
 }
-gbo: #soa[2]Gbo
+gbo: #soa[BUF_LEN]Gbo
 
-Progress :: enum {
-	Continue,
-	Exit,
+Error :: enum {
+	None,
 	Crash,
 	NoWayland,
 }
@@ -83,7 +73,7 @@ Status :: enum {
 }
 GL :: #config(GL, false)
 
-start :: proc() -> Progress {
+start :: proc() -> Error {
 	conn, display, ok := connect_display()
 	if !ok do return .NoWayland
 	st := State {
@@ -106,10 +96,14 @@ start :: proc() -> Progress {
 		}
 		st.shm_fd = shm_fd
 	}
-	create_objects(&conn, &st, recv_buf[:])
+	if create_objects(&conn, &st, recv_buf[:]) != .NONE {
+		fmt.println("Initial object creation failed")
+		return .Crash
+	}
 	defer quit(&conn, st)
 
 	i: u8 = 0
+	fmt.println("Entering main loop")
 	m: for {
 		if err := connection_flush(&conn); err != .NONE {
 			fmt.println("FLUSH Error:", err)
@@ -127,7 +121,7 @@ start :: proc() -> Progress {
 
 				for {
 					object, event := peek_event(&conn) or_break
-					if prog := receive_events(&conn, &st, object, event); prog != .Continue do return prog
+					if exit := receive_events(&conn, &st, object, event); exit do return .None
 				}
 				conn.data_cursor = 0
 				conn.data = {}
@@ -139,7 +133,7 @@ start :: proc() -> Progress {
 		draw(&conn, &st, u32(i))
 		i += 1
 	}
-	return .Exit
+	return .None
 }
 
 draw :: proc(conn: ^Connection, st: ^State, i: u32) {
@@ -156,23 +150,28 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 		st.should_redraw = false
 	} else {
 		assert(st.zwp_linux_dmabuf != 0)
-		free_idx := -1
-		le := gbo.fd[0]
+		buf: Gbo
 
-		for busy, i in gbo.busy {
-			if !busy {
-				free_idx = i
+		for tmp_buf, i in gbo {
+			fmt.println("trying: ", tmp_buf)
+			if !tmp_buf.busy {
+				fmt.println("found free")
+				buf = tmp_buf
 				break
 			}
 		}
-		if free_idx == -1 {
-			fmt.println("all busy")
+		if buf.busy {
 			st.should_redraw = false
+			fmt.println("busy")
+			fmt.println("====================END DRAW====================")
 			return
 		}
+
+		fmt.println("clear")
 		gl.ClearColor(.5, .5, .8, .9)
 		gl.Clear(gl.COLOR_BUFFER_BIT)
 		glscene()
+		fmt.println("swap")
 		res := egl.SwapBuffers(egl_display, egl_surface)
 		fmt.printfln("swap (%b32)", res)
 		assert(res == true)
@@ -181,20 +180,30 @@ draw :: proc(conn: ^Connection, st: ^State, i: u32) {
 		fmt.println("post-lock", bo)
 		assert(bo != {})
 
-		i := free_idx
-		if gbo[i].bo != {} && gbo[i].bo != bo {
-			gbm.surface_release_buffer(gbm_surface, gbo[i].bo)
+		if buf.bo != {} && buf.bo != bo {
+			last_bo := buf.bo
+			if buffer, bound_bo, ok := init_buffer(
+				conn,
+				st,
+				buf,
+				egl_surface,
+				egl_display,
+				gbm_surface,
+			); ok {
+				buf.bo = bound_bo
+				buf.buffer = buffer
+				buf.busy = false
+			}
+			gbm.surface_release_buffer(gbm_surface, last_bo)
 		}
-		gbo[i].bo = bo
 
-
-		fmt.println(gbo[i].buffer)
-		surface_attach(conn, wl_surface, gbo[i].buffer, 0, 0)
+		surface_attach(conn, wl_surface, buf.buffer, 0, 0)
 		surface_damage_buffer(conn, wl_surface, 0, 0, i32(w), i32(h))
+		surface_commit(conn, wl_surface)
 		surface_commit(conn, wl_surface)
 
 
-		gbo[i].busy = true
+		buf.busy = true
 		st.should_redraw = false
 		fmt.println("====================END DRAW====================")
 	}
@@ -300,7 +309,7 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 	connection_poll(conn, buff)
 	for {
 		object, event := peek_event(conn) or_break
-		if prog := receive_events(conn, st, object, event); prog != .Continue do return .NONE
+		if exit := receive_events(conn, st, object, event); exit do return .NONE
 	}
 	conn.data_cursor = 0
 	conn.data = {}
@@ -317,6 +326,9 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 	xdg_toplevel_set_title(conn, st.xdg_toplevel, app.TITLE)
 	xdg_toplevel_set_app_id(conn, st.xdg_toplevel, app.APP_ID)
 	surface_commit(conn, st.wl_surface)
+	if st.zwp_linux_dmabuf != 0 {
+		zwp_linux_dmabuf_v1_get_surface_feedback(conn, st.zwp_linux_dmabuf, st.wl_surface)
+	}
 
 	fmt.println(st.xdg_surface, "xdg_surface")
 	fmt.println(st.wl_keyboard, "wl_keyboard")
@@ -325,8 +337,10 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 	connection_poll(conn, buff)
 	for {
 		object, event := peek_event(conn) or_break
-		if prog := receive_events(conn, st, object, event); prog != .Continue do return .NONE
+		if exit := receive_events(conn, st, object, event); exit do return .NONE
 	}
+	conn.data_cursor = 0
+	conn.data = {}
 	if st.use_software {
 		using st
 		if wl_shm != 0 && wl_shm_pool == 0 && wl_buffer == 0 {
@@ -347,7 +361,12 @@ create_objects :: proc(conn: ^Connection, st: ^State, buff: []byte) -> linux.Err
 			fmt.println(wl_shm_pool, "shm created")
 			fmt.println(wl_buffer, "buffers created")
 		}
-	} else do setup_egl(conn, st)
+	} else {
+		if !setup_egl(conn, st) {
+			fmt.println("Error in GL creation")
+			return .EADV
+		}
+	}
 	return .NONE
 }
 
@@ -364,6 +383,7 @@ connect_display :: proc() -> (conn: Connection, display: Display, ok: bool) {
 	)
 
 	if err := linux.connect(socket, &addr); err != .NONE {
+		fmt.println("Wayland connection failed:", err)
 		return
 	}
 
@@ -391,7 +411,7 @@ create_shm_file :: proc(fb: ^[]u8, size: u32) -> (shm_fd: linux.Fd, err: linux.E
 
 
 @(private)
-receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Progress {
+receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> (exit: bool) {
 	#partial switch e in ev {
 	case Event_Registry_Global:
 		switch e.interface {
@@ -435,7 +455,9 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 				4,
 				Zwp_Linux_Dmabuf_V1,
 			)
+		// zwp_linux_dmabuf_v1_get_default_feedback(conn, st.zwp_linux_dmabuf)
 		}
+	// fmt.println(e.interface)
 	case Event_Display_Error:
 		fmt.println("[ERROR] code:", e.code, "::", e.object_id, e.message)
 	case Event_Shell_Surface_Ping:
@@ -475,7 +497,7 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 			}
 		}
 	case Event_Xdg_Toplevel_Close:
-		return .Exit
+		return true
 	case Event_Callback_Done:
 		when ODIN_DEBUG do fmt.printfln("%ims", e.callback_data - st.tick)
 		st.tick = e.callback_data
@@ -484,6 +506,12 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 		fmt.println("config bounds: ", e.width, "x", e.height)
 	case Event_Xdg_Toplevel_Wm_Capabilities:
 		fmt.println("capabilities:", e.capabilities)
+	case Event_Buffer_Release:
+		fmt.println("Buffer released")
+	case Event_Zwp_Linux_Dmabuf_Feedback_V1_Main_Device:
+		fmt.println("Event_Zwp_Linux_Dmabuf_Feedback_V1_Main_Device", e)
+	case Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table:
+		fmt.println("Event_Zwp_Linux_Dmabuf_Feedback_V1_Format_Table", e)
 	case Event_Seat_Capabilities:
 		capabilities := u32(e.capabilities)
 		fmt.println("Seat capabilities: ", capabilities)
@@ -499,7 +527,7 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 			if ptr, err := linux.mmap(0, uint(e.size), {.READ}, {.PRIVATE}, fd); err != .NONE {
 				fmt.println("mmap failed, ", err)
 				linux.close(fd)
-				return .Crash
+				return false
 			} else {
 				st.keymap = true
 				linux.munmap(ptr, uint(e.size))
@@ -509,7 +537,7 @@ receive_events :: proc(conn: ^Connection, st: ^State, obj: u32, ev: Event) -> Pr
 	case:
 		when ODIN_DEBUG do fmt.printf("unknown message header: %i; opcode: %i\n", obj, e)
 	}
-	return .Continue
+	return false
 }
 
 resize_pool :: proc(state: ^State, w, h: i32) {
