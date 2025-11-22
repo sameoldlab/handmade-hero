@@ -46,6 +46,7 @@ State :: struct {
 	gbm_device:                          gbm.Device,
 	gbm_surface:                         gbm.Surface,
 	zwp_linux_dmabuf:                    wl.Zwp_Linux_Dmabuf_V1,
+	shader_program, vao, vbo:            u32,
 
 	// SHM
 	shm_fd:                              linux.Fd,
@@ -169,10 +170,7 @@ draw :: proc(conn: ^wl.Connection, st: ^State, i: u32) {
 		}
 
 		fmt.println("clear")
-		gl.ClearColor(.5, .5, .8, .9)
-		gl.Clear(gl.COLOR_BUFFER_BIT)
-		gl.Flush()
-		glscene()
+		renderer_draw(st.shader_program, st.vao)
 		fmt.println("swap")
 		res := egl.SwapBuffers(egl_display, egl_surface)
 		fmt.printfln("swap (%b32)", res)
@@ -209,102 +207,6 @@ draw :: proc(conn: ^wl.Connection, st: ^State, i: u32) {
 		st.should_redraw = false
 		fmt.println("====================END DRAW====================")
 	}
-}
-glscene :: proc() {
-	// Shader source that draws a textures quad
-	vertex_shader_source: cstring =
-		"#version 330 core\n" +
-		"layout (location = 0) in vec3 aPos;\n" +
-		"layout (location = 1) in vec2 aTexCoords;\n" +
-		"out vec2 TexCoords;\n" +
-		"void main()\n" +
-		"{\n" +
-		"   TexCoords = aTexCoords;\n" +
-		"   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n" +
-		"}"
-	fragment_shader_source: cstring =
-		"#version 330 core\n" +
-		"out vec4 FragColor;\n" +
-		"in vec2 TexCoords;\n" +
-		"uniform sampler2D Texture1;\n" +
-		"void main()\n" +
-		"{\n" +
-		"   FragColor = texture(Texture1, TexCoords);\n" +
-		"}"
-
-	// vertex shader
-	vertex_shader := gl.CreateShader(gl.VERTEX_SHADER)
-	gl.ShaderSource(vertex_shader, 1, &vertex_shader_source, nil)
-	gl.CompileShader(vertex_shader)
-	// fragment shader
-	fragment_shader := gl.CreateShader(gl.FRAGMENT_SHADER)
-	gl.ShaderSource(fragment_shader, 1, &fragment_shader_source, nil)
-	gl.CompileShader(fragment_shader)
-	// link shaders
-	shader_program := gl.CreateProgram()
-	gl.AttachShader(shader_program, vertex_shader)
-	gl.AttachShader(shader_program, fragment_shader)
-	gl.LinkProgram(shader_program)
-	// delete shaders
-	gl.DeleteShader(vertex_shader)
-	gl.DeleteShader(fragment_shader)
-
-	// quad
-	vertices := []f32 {
-		0.5,
-		0.5,
-		0.0,
-		1.0,
-		0.0, // top right
-		0.5,
-		-0.5,
-		0.0,
-		1.0,
-		1.0, // bottom right
-		-0.5,
-		-0.5,
-		0.0,
-		0.0,
-		1.0, // bottom left
-		-0.5,
-		0.5,
-		0.0,
-		0.0,
-		0.0, // top left
-	}
-	indices: []u32 = {
-		0,
-		1,
-		3, // first Triangle
-		1,
-		2,
-		3, // second Triangle
-	}
-
-	VBO, VAO, EBO: u32
-	gl.GenVertexArrays(1, &VAO)
-	gl.GenBuffers(1, &VBO)
-	gl.GenBuffers(1, &EBO)
-	gl.BindVertexArray(VAO)
-
-	gl.BindBuffer(gl.ARRAY_BUFFER, VBO)
-	gl.BufferData(gl.ARRAY_BUFFER, size_of(vertices), raw_data(vertices), gl.STATIC_DRAW)
-
-	gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, EBO)
-	gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, size_of(indices), raw_data(indices), gl.STATIC_DRAW)
-
-	gl.EnableVertexAttribArray(0)
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 5 * size_of(f32), 0)
-	gl.EnableVertexAttribArray(1)
-	gl.VertexAttribPointer(1, 2, gl.FLOAT, gl.FALSE, 5 * size_of(f32), (3 * size_of(f32)))
-
-	gl.BindBuffer(gl.ARRAY_BUFFER, 0)
-
-	gl.BindVertexArray(0)
-
-	// Prebind needed stuff for drawing
-	gl.UseProgram(shader_program)
-	gl.BindVertexArray(VAO)
 }
 create_objects :: proc(conn: ^wl.Connection, st: ^State, buff: []byte) -> linux.Errno {
 	wl.connection_flush(conn) or_return

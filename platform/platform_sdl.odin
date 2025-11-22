@@ -1,19 +1,25 @@
 package platform
+
 import app "../app"
 import "base:intrinsics"
 import "core:c"
 import "core:fmt"
+import "core:log"
 import "core:math"
 import "core:mem"
 import "core:strings"
+import gl "vendor:OpenGL"
 import sdl "vendor:sdl3"
 
 SDL_Context :: struct {
-	window:   ^sdl.Window,
-	renderer: ^sdl.Renderer,
-	texture:  ^sdl.Texture,
-	fb:       []u8,
-	w, h:     c.int,
+	window:                   ^sdl.Window,
+	renderer:                 ^sdl.Renderer,
+	texture:                  ^sdl.Texture,
+	gl_context:               sdl.GLContext,
+	shader_program, vao, vbo: u32,
+	fb:                       []u8,
+	w, h:                     c.int,
+	use_software:             bool,
 }
 Sound_Output :: struct {
 	sampleRate: i32,
@@ -106,8 +112,30 @@ pl_init_ui :: proc(
 		return ctx, string(sdl.GetError())
 	}
 
-	ctx.window = sdl.CreateWindow(app.TITLE, width, height, sdl.WINDOW_RESIZABLE)
+
+	ctx.window = sdl.CreateWindow(app.TITLE, width, height, {.OPENGL, .RESIZABLE})
 	if ctx.window == nil {return ctx, string(sdl.GetError())}
+	if !ctx.use_software {
+		sdl.GL_SetAttribute(.CONTEXT_MAJOR_VERSION, GL_MAJOR)
+		sdl.GL_SetAttribute(.CONTEXT_MINOR_VERSION, GL_MINOR)
+		sdl.GL_SetAttribute(.CONTEXT_PROFILE_MASK, i32(sdl.GLProfile.CORE))
+		sdl.GL_SetAttribute(.DOUBLEBUFFER, 1)
+		sdl.GL_SetAttribute(.DEPTH_SIZE, 24)
+
+		ctx.gl_context = sdl.GL_CreateContext(ctx.window)
+		if ctx.gl_context == nil {
+			return ctx, fmt.tprintf(
+				"OpenGL context creation failed: %v",
+				sdl.GetError(),
+				newline = true,
+			)
+		}
+		gl.load_up_to(GL_MAJOR, GL_MINOR, sdl.gl_set_proc_address)
+		sdl.GL_SetSwapInterval(1)
+		log.debugf("OpenGL Version: %v.%v", gl.loaded_up_to_major, gl.loaded_up_to_minor)
+		log.debugf("GLSL Version: %s", gl.GetString(gl.SHADING_LANGUAGE_VERSION))
+		log.debugf("Renderer: %s", gl.GetString(gl.RENDERER))
+	}
 
 	ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
 	if ctx.renderer == nil {return ctx, string(sdl.GetError())}
@@ -143,8 +171,12 @@ pl_init_controller :: proc() -> bool {
 	}
 	return true
 }
-pl_quit :: proc(ctx: SDL_Context) {
+pl_quit :: proc(ctx: ^SDL_Context) {
 	delete(ctx.fb)
+	gl.DeleteVertexArrays(1, &ctx.vao)
+	gl.DeleteBuffers(1, &ctx.vbo)
+	gl.DeleteProgram(ctx.shader_program)
+	sdl.GL_DestroyContext(ctx.gl_context)
 	sdl.DestroyTexture(ctx.texture)
 	sdl.DestroyWindow(ctx.window)
 	sdl.Quit()
@@ -160,12 +192,11 @@ pl_set_refresh_rate :: proc(mode: ^sdl.DisplayMode) -> f32 {
 		return math.min(mode.refresh_rate, 120)
 	}
 }
-
 sdl_start :: proc() {
 	// Initialize Graphics
 	ctx, err := pl_init_ui()
 	if err != nil do fmt.panicf("unable to initialize ui %s", err)
-	defer pl_quit(ctx)
+	defer pl_quit(&ctx)
 	mode := sdl.GetCurrentDisplayMode(sdl.GetDisplayForWindow(ctx.window))
 	targetFps: f32 = 1 / pl_set_refresh_rate(mode)
 
@@ -179,6 +210,12 @@ sdl_start :: proc() {
 		latency    = SampleRate / 12,
 	}
 
+	if shader_program, vao, vbo, ok := renderer_make_program(); ok {
+		ctx.shader_program, ctx.vao, ctx.vbo = shader_program, vao, vbo
+	} else {
+		log.error("failed to initialize shader program")
+		return
+	}
 	pl_init_controller()
 	// will run on starup from a resize event
 	// pl_resize_texture(&app, mode.w, mode.h)
@@ -215,11 +252,16 @@ sdl_start :: proc() {
 				)
 				sdl.PutAudioStreamData(sound.stream, &samples[0], bytesToWrite * 4)
 			}
-			app.update_render(ctx.fb, u32(ctx.w), u32(ctx.h))
-			pl_draw(app.FrameBuffer{ctx.fb, ctx.w, ctx.h}, ctx.renderer, ctx.texture)
-			// if !res {
-			// 	sdl.Log("failed to put audio %s", sdl.GetError())
-			// }
+			if ctx.use_software {
+				app.update_render(ctx.fb, u32(ctx.w), u32(ctx.h))
+				pl_draw(app.FrameBuffer{ctx.fb, ctx.w, ctx.h}, ctx.renderer, ctx.texture)
+				// if !res {
+				// 	sdl.Log("failed to put audio %s", sdl.GetError())
+				// }
+			} else {
+				renderer_draw(ctx.shader_program, ctx.vao)
+				sdl.GL_SwapWindow(ctx.window)
+			}
 		}
 		endPerfCount := sdl.GetPerformanceCounter()
 		counterElapsed := endPerfCount - lastPerfCount

@@ -92,7 +92,13 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 		fmt.println("Bind API failed")
 		return false
 	}
-	context_attribs := []i32{egl.CONTEXT_MAJOR_VERSION, 3, egl.CONTEXT_MINOR_VERSION, 3, egl.NONE}
+	context_attribs := []i32 {
+		egl.CONTEXT_MAJOR_VERSION,
+		GL_MAJOR,
+		egl.CONTEXT_MINOR_VERSION,
+		GL_MINOR,
+		egl.NONE,
+	}
 	st.egl_context = egl.CreateContext(
 		st.egl_display,
 		egl_config,
@@ -132,6 +138,12 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 	fmt.printfln("Renderer: %s", gl.GetString(gl.RENDERER))
 
 	gl.Viewport(0, 0, i32(st.w), i32(st.h))
+	if shader_program, vao, vbo, ok := renderer_make_program(); ok {
+		st.shader_program, st.vao, st.vbo = shader_program, vao, vbo
+	} else {
+		log.error("failed to initialize shader program")
+		return false
+	}
 	gl.Disable(gl.BLEND)
 
 	init_buffers(conn, st, gbo[:], st.egl_surface, st.egl_display, st.gbm_surface)
