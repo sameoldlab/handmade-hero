@@ -16,38 +16,29 @@ import gl "vendor:OpenGL"
 
 vertex_shader_source: cstring = `
 #version 460 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec3 aCol;
-
-out vec3 oCol;
+layout (location = 0) in vec2 aPos;
 
 void main() {
-    gl_Position = vec4(aPos, 1.0);
-    oCol = aCol;
+    gl_Position = vec4(aPos, 0.0, 1.0);
 }
 `
 
 
 fragment_shader_source: cstring = `
 #version 460 core
-in vec3 oCol;
 out vec4 FragColor;
 
 void main() {
-    FragColor = vec4(oCol, 1.0);
+    FragColor = vec4(1., vec2(.1), 1.0);
 }
 `
 
 triangle_vao: u32
 
 renderer_draw :: proc(shader, vao: u32) {
-	gl.ClearColor(0.2, 0.3, 0.4, 1.0)
-	gl.Clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-
 	gl.UseProgram(shader)
-
 	gl.BindVertexArray(vao)
-	gl.DrawArrays(gl.TRIANGLES, 0, 3)
+	gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
 	gl.BindVertexArray(0)
 }
 
@@ -59,36 +50,37 @@ renderer_make_program :: proc() -> (program, vao, vbo: u32, ok: bool) {
 
 	triangle := []f32 {
 		// pos           // col
-		-0.5, -0.5, 0.0, 1.0, 0.0, 0.0, // bottom left (red)
-		 0.5, -0.5, 0.0, 0.0, 1.0, 0.0, // bottom right (green)
-		 0.0,  0.5, 0.0, 0.0, 0.0, 1.0, // top (blue)
+		-0.5, -0.5, 0.0, 1.0, 0.0, 0.0, // BL
+		 0.5, -0.5, 0.0, 0.0, 1.0, 0.0, // BR
+		 0.0,  0.5, 0.0, 0.0, 0.0, 1.0, // TC
 	} 
+	
+	quad := []f32 {
+		 1.0,  1.0, // TR
+		 1.0, -1.0, // BR
+		-1.0, -1.0, // BL
+		-1.0,  1.0, // TL
+	}
+	indices: []u32 = {
+		0, 1, 3,
+		1, 2, 3,
+	}
 
+	ebo: u32
 	gl.CreateVertexArrays(1, &vao)
 	gl.CreateBuffers(1, &vbo)
-	log.debugf("VAO: %d, VBO: %d", vao, vbo)
+	gl.CreateBuffers(1, &ebo)
 
-	// gl.NamedBufferData(vbo, len(triangle) * size_of(f32), raw_data(triangle), gl.STATIC_DRAW)
-	// gl.VertexArrayVertexBuffer(vao, 0, vbo, 0, 5 * size_of(f32))
+	gl.NamedBufferData(vbo, len(quad) * size_of(f32), raw_data(quad), gl.STATIC_DRAW)
+	gl.NamedBufferData(ebo, len(indices) * size_of(f32), raw_data(indices), gl.STATIC_DRAW)
 
-	gl.BindVertexArray(vao)
-	gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
-	gl.BufferData(
-		gl.ARRAY_BUFFER,
-		len(triangle) * size_of(f32),
-		raw_data(triangle),
-		gl.STATIC_DRAW,
-	)
+	gl.VertexArrayVertexBuffer(vao, 0, vbo, 0, 2 * size_of(f32))
+	gl.VertexArrayElementBuffer(vao, ebo)
 
-	// Position
-	gl.VertexAttribPointer(0, 3, gl.FLOAT, gl.FALSE, 6 * size_of(f32), 0)
-	gl.EnableVertexAttribArray(0)
+	gl.EnableVertexArrayAttrib(vao, 0)
+	gl.VertexArrayAttribFormat(vao, 0, 2, gl.FLOAT, gl.FALSE, 0)
+	gl.VertexArrayAttribBinding(vao, 0, 0)
 
-	// Color
-	gl.VertexAttribPointer(1, 3, gl.FLOAT, gl.FALSE, 6 * size_of(f32), 3 * size_of(f32))
-	gl.EnableVertexAttribArray(1)
-
-	gl.BindVertexArray(0)
 	return program, vao, vbo, true
 }
 

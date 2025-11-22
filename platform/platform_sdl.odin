@@ -132,14 +132,16 @@ pl_init_ui :: proc(
 		}
 		gl.load_up_to(GL_MAJOR, GL_MINOR, sdl.gl_set_proc_address)
 		sdl.GL_SetSwapInterval(1)
-		log.debugf("OpenGL Version: %v.%v", gl.loaded_up_to_major, gl.loaded_up_to_minor)
-		log.debugf("GLSL Version: %s", gl.GetString(gl.SHADING_LANGUAGE_VERSION))
-		log.debugf("Renderer: %s", gl.GetString(gl.RENDERER))
+		when ODIN_DEBUG {
+			log.debugf("OpenGL Version: %v.%v", gl.loaded_up_to_major, gl.loaded_up_to_minor)
+			log.debugf("GLSL Version: %s", gl.GetString(gl.SHADING_LANGUAGE_VERSION))
+			log.debugf("Renderer: %s", gl.GetString(gl.RENDERER))
+		}
+	} else {
+		ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
+		if ctx.renderer == nil {return ctx, string(sdl.GetError())}
+		sdl.SetRenderVSync(ctx.renderer, sdl.RENDERER_VSYNC_ADAPTIVE)
 	}
-
-	ctx.renderer = sdl.CreateRenderer(ctx.window, nil)
-	if ctx.renderer == nil {return ctx, string(sdl.GetError())}
-	sdl.SetRenderVSync(ctx.renderer, sdl.RENDERER_VSYNC_ADAPTIVE)
 
 	return ctx, nil
 }
