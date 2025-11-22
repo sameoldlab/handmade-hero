@@ -1,6 +1,6 @@
 package platform
 
-import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:sys/linux"
 import "egl"
@@ -19,12 +19,12 @@ open_drm_device :: proc() -> (fd: linux.Fd, ok: bool) {
 	for node in render_nodes {
 		fd_int, err := linux.open(node, {.RDWR}, {})
 		if err == .NONE {
-			fmt.printfln("Opened DRM device: %s", node)
+			log.debugf("Opened DRM device: %s", node)
 			return linux.Fd(fd_int), true
 		}
 	}
 
-	fmt.println("Failed to open any DRM device")
+	log.debug("Failed to open any DRM device")
 	return 0, false
 }
 
@@ -36,7 +36,7 @@ open_drm_device :: proc() -> (fd: linux.Fd, ok: bool) {
 
 // https://registry.khronos.org/EGL/sdk/docs/man/html/eglIntro.xhtml
 setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
-	fmt.print("\n\n\n=====================\n")
+	log.debug("\n\n\n=====================\n")
 
 	st.drm_fd = open_drm_device() or_return
 	gbm_device := gbm.create_device(st.drm_fd)
@@ -56,15 +56,15 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 	st.egl_display = egl.GetPlatformDisplay(egl.Platform.GBM_KHR, gbm_device, nil)
 	// st.egl_display = egl.GetDisplay(egl.DEFAULT_DISPLAY)
 	if st.egl_display == egl.NO_DISPLAY {
-		fmt.println("Failed to create egl display")
+		log.error("Failed to create egl display")
 		return false
 	}
 
 	if !egl.Initialize(st.egl_display, &major, &minor) {
-		fmt.println("Failed to initialize egl")
+		log.error("Failed to initialize egl")
 		return false
 	}
-	fmt.printfln("EGLv%i.%i Initialized", major, minor)
+	log.infof("EGLv%i.%i Initialized", major, minor)
 
 	config_attribs := []i32 {
 		egl.SURFACE_TYPE,
@@ -83,13 +83,13 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 	egl_config: egl.Config
 
 	if !egl.ChooseConfig(st.egl_display, &config_attribs[0], &egl_config, 1, &num_configs) {
-		fmt.println("Failed to choose egl config")
+		log.error("Failed to choose egl config")
 		return false
 	}
-	fmt.println("configs: ", num_configs)
+	log.debug("configs: ", num_configs)
 
 	if !egl.BindAPI(egl.OPENGL_API) {
-		fmt.println("Bind API failed")
+		log.error("Bind API failed")
 		return false
 	}
 	context_attribs := []i32 {
@@ -106,7 +106,7 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 		&context_attribs[0],
 	)
 	assert(st.egl_context != egl.NO_CONTEXT)
-	fmt.println(st.egl_context, "egl_context created")
+	log.debug(st.egl_context, "egl_context created")
 
 
 	st.egl_surface = egl.CreatePlatformWindowSurface(st.egl_display, egl_config, gbm_surface, nil)
@@ -116,26 +116,26 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 	// 	cast(egl.NativeWindowType)gbm_surface,
 	// 	nil,
 	// )
-	fmt.println("egl surface: ", st.egl_surface)
+	log.debug("egl surface: ", st.egl_surface)
 	assert(st.egl_surface != egl.NO_SURFACE)
 
 	if !egl.MakeCurrent(st.egl_display, st.egl_surface, st.egl_surface, st.egl_context) {
-		fmt.println("Failed to make egl context current")
+		log.error("Failed to make egl context current")
 		return false
 	}
 	w, h: i32
 	egl.QuerySurface(st.egl_display, st.egl_surface, egl.WIDTH, &w)
 	egl.QuerySurface(st.egl_display, st.egl_surface, egl.HEIGHT, &h)
 	assert(u32(w) == st.w)
-	fmt.printfln("EGL Context Current. size:%ix%i:", w, h)
+	log.debugf("EGL Context Current. size:%ix%i:", w, h)
 
 	st.gbm_device = gbm_device
 	st.gbm_surface = gbm_surface
 
 	gl.load_up_to(GL_MAJOR, GL_MINOR, egl.gl_set_proc_address)
 
-	fmt.printfln("OpenGL %s", gl.GetString(gl.VERSION))
-	fmt.printfln("Renderer: %s", gl.GetString(gl.RENDERER))
+	log.infof("OpenGL %s", gl.GetString(gl.VERSION))
+	log.infof("Renderer: %s", gl.GetString(gl.RENDERER))
 
 	gl.Viewport(0, 0, i32(st.w), i32(st.h))
 	if shader_program, vao, vbo, ok := renderer_make_program(); ok {
@@ -147,7 +147,7 @@ setup_egl :: proc(conn: ^wl.Connection, st: ^State) -> bool {
 	gl.Disable(gl.BLEND)
 
 	init_buffers(conn, st, gbo[:], st.egl_surface, st.egl_display, st.gbm_surface)
-	fmt.print("\n========= OPENGL READY ============\n")
+	log.info("\n========= OPENGL READY ============\n")
 	return true
 }
 
@@ -160,7 +160,7 @@ init_buffers :: proc(
 	gbm_surface: gbm.Surface,
 	// w, h: u32,
 ) {
-	fmt.println("creating buffer pool...")
+	log.debug("creating buffer pool...")
 	for &buf, i in buffers {
 		buf.busy = true
 		buffer, bound_bo, ok := init_buffer(conn, st, buf, egl_surface, egl_display, gbm_surface)
@@ -170,7 +170,7 @@ init_buffers :: proc(
 			buf.busy = false
 		}
 	}
-	fmt.println(buffers)
+	log.debug(buffers)
 }
 init_buffer :: proc(
 	conn: ^wl.Connection,
@@ -189,10 +189,10 @@ init_buffer :: proc(
 	gl.Clear(gl.COLOR_BUFFER_BIT)
 	gl.Flush()
 	if !egl.SwapBuffers(egl_display, egl_surface) {
-		fmt.println("Swap Buffers failed")
+		log.error("Swap Buffers failed")
 		err := gl.GetError()
 		if err != gl.NO_ERROR {
-			fmt.printfln("OpenGL error: %d", err)
+			log.errorf("OpenGL error: %d", err)
 		}
 		return
 	}
@@ -200,13 +200,13 @@ init_buffer :: proc(
 	bo := gbm.surface_lock_front_buffer(gbm_surface)
 	assert(bo != {})
 
-	fmt.println("---------------------------------------\nGetting properties for buffer:", bo)
+	log.debug("---------------------------------------\nGetting properties for buffer:", bo)
 	w := gbm.bo_get_width(bo)
 	h := gbm.bo_get_height(bo)
 	format := gbm.bo_get_format(bo)
 	modifier := gbm.bo_get_modifier(bo)
 	// dma_fd := linux.Fd(gbm.bo_get_fd(bo))
-	// fmt.println("dma_fd", dma_fd)
+	// log.debug("dma_fd", dma_fd)
 	fds_to_close: [dynamic]u32
 	defer {
 		for fd in fds_to_close {
@@ -220,7 +220,7 @@ init_buffer :: proc(
 		offset := gbm.bo_get_offset(bo, plane)
 		stride := gbm.bo_get_stride_for_plane(bo, plane)
 		plane_fd := gbm.bo_get_fd_for_plane(bo, plane)
-		fmt.println("plane_fd", plane_fd)
+		log.debug("plane_fd", plane_fd)
 		append(&fds_to_close, plane_fd)
 
 		assert(plane_fd > 0)
@@ -242,7 +242,7 @@ init_buffer :: proc(
 	recv_buf: [4096]byte
 	result, _ := linux.poll({linux.Poll_Fd{fd = conn.socket, events = {.IN}}}, 16)
 	if result <= 0 {
-		fmt.println("hung waiting for buffer creation")
+		log.error("hung waiting for buffer creation")
 		return
 	}
 	wl.connection_poll(conn, recv_buf[:])
@@ -250,11 +250,11 @@ init_buffer :: proc(
 		object, event := wl.peek_event(conn) or_break
 		#partial switch e in event {
 		case wl.Event_Zwp_Linux_Buffer_Params_V1_Created:
-			fmt.printfln("Buffer creation success for %i", zwp_params, bo)
+			log.info("Buffer creation success for", zwp_params, bo)
 			wl.zwp_linux_buffer_params_v1_destroy(conn, zwp_params)
 			return e.buffer, bo, true
 		case wl.Event_Zwp_Linux_Buffer_Params_V1_Failed:
-			fmt.printfln("Buffer creation failed for %i", zwp_params)
+			log.errorf("Buffer creation failed for %i", zwp_params)
 			wl.zwp_linux_buffer_params_v1_destroy(conn, zwp_params)
 		case:
 			receive_events(conn, st, object, event)
